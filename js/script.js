@@ -5,20 +5,33 @@
 
 //https://developers.google.com/maps/documentation/javascript/examples/place-photos
 
-
 let map;
 let service; 
 let markers = [];
 let infoWindow; 
+let promedioPin = null; // marcador del promedio
+let places = [] //Variable global de los lugaes
+let promLocation = null; //Ubicacion del promedio de lugares
+let promedioCircle=null; //Circulo del area
+let Line = null; //Linea
+
+//Define las coordenadas centrales iniciales (Nuevo Casas Grandes, Chihuahua, México).
 const center = { lat: 30.378746, lng: -107.880062 };
 const restaurantListElement = document.getElementById("restaurants-list");
 let getPhotoUrlFunction;
+//consulta de búsqueda predeterminada.
 let currentSearch ="Tacos, comida, restaurantes"
 
+//Iniciar mapa
 async function initMap() {
   const defaultLocation = center;
+  //importa la clase Place y la función getPhotoUrl de la librería places. 
+  //Esto reemplaza la necesidad de crear un objeto PlacesService como en la versión anterior.
     const { Place, getPhotoUrl } = await google.maps.importLibrary("places");
+    const { AdvancedMarkerElement } = await google.maps.importLibrary("marker"); // <-- ¡Añadido!
+
     getPhotoUrlFunction = getPhotoUrl; 
+    //crear mapa
     map = new google.maps.Map(document.getElementById("map"), {
         center: defaultLocation,
         zoom: 14,
@@ -26,35 +39,41 @@ async function initMap() {
     });
     
     infoWindow = new google.maps.InfoWindow();
-    findPlaces(currentSearch);
+    //Inicia la primera búsqueda automáticamente. Y guarda el promedio
+     await findPlaces(currentSearch);
+
+
+    
 }
 
+
+
+
+
+
+//Limpia el mapa de busquedas anteriores
 function clearMarkers() {
   markers.forEach((marker) => marker.setMap(null));
   markers = [];
-
   if (infoWindow) infoWindow.close();
   if (restaurantListElement) {
       restaurantListElement.innerHTML = "";
   }
 }
+
+//Agregar marcador
 async function addMarkerAndDisplay(place, bounds) {
     const { AdvancedMarkerElement } = await google.maps.importLibrary("marker");
-  
     const marker = new AdvancedMarkerElement({
       map,
       position: place.location,
       title: place.displayName,
     });
-
     bounds.extend(place.location);
     markers.push(marker);
     displayRestaurant(place);
-    
-
     marker.addListener("click", () => {
         infoWindow.close(); 
-
         const content = `
             <div class="info-window-content">
                 <h6 class="fw-bold">${place.displayName}</h6>
@@ -62,71 +81,212 @@ async function addMarkerAndDisplay(place, bounds) {
                 <div class="rating text-warning">⭐ ${place.rating || 'N/A'}</div>
             </div>
         `;
-
-   
         infoWindow.setContent(content);
         infoWindow.open({
             anchor: marker,
             map: map,
             shouldFocus: false, 
         });
-        
-        
         map.panTo(place.location);
     });
 }
 
 
+//Encontrar lugares
 async function findPlaces(searchText) {
   clearMarkers(); 
-
   const { Place } = await google.maps.importLibrary("places");
-  
+  const { LatLngBounds } = await google.maps.importLibrary("core");
+
+  const bounds = new LatLngBounds();
+
+  //Petición de búsqueda (usando la categoría que el usuario elija)
   const request = {
-    textQuery: searchText,
-    //NOTA ENTRE MÁS DATOS SE PIDA DEL LOCAL, MÁS CARO SALE LA PETICIÓN
-    //OBTENER Más datos: https://developers.google.com/maps/documentation/places/web-service/data-fields?hl=en
+    textQuery: searchText, // Aquí va el texto de búsqueda dinámico
     fields: [
-        "displayName", "location", "businessStatus", "rating", "photos", "formattedAddress",
+      "displayName",
+      "location",
+      "businessStatus",
+      "rating",
+      "photos",
+      "formattedAddress",
+      "userRatingCount"
     ],
-    //includedType: "restaurant",
-    locationBias: center,
+    locationBias: center, // punto base
     isOpenNow: true,
     language: "es-MX",
     maxResultCount: 20,
-    //minRating: 3.2,
-    region: "mx",
-    useStrictTypeFiltering: false,
+    region: "mx"
   };
 
-  const { places } = await Place.searchByText(request);
-  const { LatLngBounds } = await google.maps.importLibrary("core");
-  const bounds = new LatLngBounds();
+const { places: foundPlaces } = await Place.searchByText(request);
+places = foundPlaces || []; //Guarda los resultados globalmente
+  console.log(`Resultados para "${searchText}":`, places);
+
+  if (!places || places.length === 0) {
+    console.log("No se encontraron resultados.");
+    if (restaurantListElement) {
+      restaurantListElement.innerHTML = `<p class='text-center mt-4'>No se encontraron resultados para "${searchText}".</p>`;
+    }
+    return;
+  }
+
+  //Variables para calcular el promedio
+  let validCount = 0;
+  let sumLat = 0;
+  let sumLng = 0;
+
+  //Agregar marcadores
+  for (const place of places) {
+    const lat = place.location?.lat();
+    const lng = place.location?.lng();
+
+    if (typeof lat === "number" && typeof lng === "number") {
+      sumLat += lat;
+      sumLng += lng;
+      validCount++;
+      await addMarkerAndDisplay(place, bounds);
+    } else {
+      console.warn("Lugar con coordenadas inválidas:", place.displayName);
+    }
+  }
+
+  // Ajustar mapa al área visible de todos los lugares
+  if (validCount > 0) {
+    map.fitBounds(bounds);
+
+    // Calcular el promedio
+    const avgLat = sumLat / validCount;
+    const avgLng = sumLng / validCount;
+
+    if (!isNaN(avgLat) && !isNaN(avgLng)) {
+       promLocation = new google.maps.LatLng(avgLat, avgLng);
+      const { AdvancedMarkerElement } = await google.maps.importLibrary("marker");
+
+      // Eliminar marcador anterior si existe
+      if (promedioPin) {
+        promedioPin.map = null;
+      }
+
+      const img = document.createElement("img");
+      img.src = "./icono/pin.webp";
+      img.style.width = "45px";
+      img.style.height = "45px";
+
+      promedioPin = new AdvancedMarkerElement({
+        map,
+        position: promLocation,
+        content: img,
+        title: "Promedio de los lugares encontrados",
+      });
+
+      promedioPin.addListener("click", () => {
+        infoWindow.close();
+        infoWindow.setContent(`
+          <div class="fw-bold">Promedio de los lugares encontrados</div>
+          <div>Latitud: ${avgLat.toFixed(6)}</div>
+          <div>Longitud: ${avgLng.toFixed(6)}</div>
+        `);
+        infoWindow.open({ anchor: promedioPin, map });
+      });
 
 
-  if (places.length) {
-    console.log("Resultados de Places (New):", places);
+      //FILTRO AUTOMÁTICO DEL 5% Y CÍRCULO
+const { Polyline } = await google.maps.importLibrary("maps");
+
+// Calcular distancia máxima de los lugares al promedio
+let maxDist = 0;
+const distances = places.map(p => {
+  const loc = p.location;
+  const d = google.maps.geometry.spherical.computeDistanceBetween(promLocation, loc);
+  if (d > maxDist) maxDist = d;
+  return d;
+});
+
+// Calcular el 5% de esa distancia
+const minDistance = maxDist * 0.05;
+
+// Filtrar los lugares que estén al menos a ese 5%
+const filtrados = places.filter((p, i) => distances[i] >= minDistance);
+
+//console.log(Lugares filtrados (≥5% del radio):, filtrados);
+
+// Limpiar la lista antes de volver a mostrar
+if (restaurantListElement) restaurantListElement.innerHTML = "";
+
+// Mostrar solo los filtrados
+filtrados.forEach(place => displayRestaurant(place));
+
+
+if (promedioCircle) {
+    promedioCircle.setMap(null); // elimina el círculo anterior
+}
+
+promedioCircle = new google.maps.Circle({
+  strokeColor: "#ff0303ff",     
+  strokeOpacity: 0.8,
+  strokeWeight: 2,
+  fillColor: "#809ee4ff",     
+  fillOpacity: 0.2,
+  map: map,
+  center: promLocation,
+  radius: maxDist              
+});
+
+if (places.length > 0 && promLocation) {
+    const { Polyline } = await google.maps.importLibrary("maps");
+
+    // Calcular distancias al promedio
+    let minDist = Infinity;
+    let maxDist = 0;
+    let closestPlace = null;
+    let farthestPlace = null;
 
     for (const place of places) {
-        await addMarkerAndDisplay(place, bounds);
+        const loc = place.location;
+        const d = google.maps.geometry.spherical.computeDistanceBetween(promLocation, loc);
+        if (d < minDist) {
+            minDist = d;
+            closestPlace = loc;
+        }
+        if (d > maxDist) {
+            maxDist = d;
+            farthestPlace = loc;
+        }
     }
-    
-    map.fitBounds(bounds);
-    
-  } else {
-    console.log("No se encontraron resultados para la búsqueda.");
-    if (restaurantListElement) {
-        restaurantListElement.innerHTML = `<p class='text-center mt-4'>No se encontraron resultados para "${searchText}".</p>`;
+
+    // Eliminar línea anterior si existe
+    if (Line) {
+        Line.setMap(null);
+    }
+
+    // Crear nueva línea
+    Line = new google.maps.Polyline({
+        path: [closestPlace, farthestPlace],
+        geodesic: true,
+        strokeColor: "#000000ff",
+        strokeOpacity: 0.8,
+        strokeWeight: 3,
+        map: map
+    });
+}
+
+
     }
   }
 }
+
+
+//Mostrar datos de los restaurantes
 async function displayRestaurant(place) {
+    const ratingCount = place.userRatingCount ? `${place.userRatingCount} Comentarios` : '(Sin comentarios)';
+
     if (!restaurantListElement) return;
 
     let photoUrl = "";
     
     if (place.photos && place.photos.length > 0) {
-        //console.log("URL",place.photos[0])
+        console.log("URL",place.photos[0])
         photoUrl = place.photos[0].getURI({ 
             //photo: place.photos[0], 
             maxWidth: 500, 
@@ -147,12 +307,27 @@ async function displayRestaurant(place) {
             <p class="mb-2 text-muted">
                 ${statusText} 
             </p>
-            <div class="rating text-warning">⭐ ${place.rating || 'N/A'}</div>
+            <div class="rating text-warning">⭐ ${place.rating || 'N/A'} ${ratingCount}</div>
         </div>
     `;
 
     restaurantListElement.innerHTML += card;
 }
+
+document.querySelectorAll(".nav-link").forEach(link => {
+  link.addEventListener("click", async (e) => {
+    e.preventDefault();
+
+    const newSearch = e.target.getAttribute("data-search");
+    console.log("Nuevo término de búsqueda:", newSearch);
+
+    document.querySelectorAll(".nav-link").forEach(l => l.classList.remove("active"));
+    e.target.classList.add("active");
+
+    await findPlaces(newSearch);
+  });
+});
+
 
 async function searchCityAndPlaces(cityName) {
    
@@ -180,6 +355,8 @@ async function searchCityAndPlaces(cityName) {
         }
     });
 }
+
+
 document.addEventListener("DOMContentLoaded", () => {
     const searchButton = document.getElementById("search-btn");
     const locationInput = document.getElementById("location-input");
@@ -198,4 +375,53 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         });
     }
+
+    document.getElementById("btnValorados")?.addEventListener("click", () => {
+  if (!places || places.length === 0) {
+    console.warn("No hay lugares cargados aún.");
+    return;
+  }
+
+  // Limpia lista anterior
+  if (restaurantListElement) restaurantListElement.innerHTML = "";
+
+  // Ordena de mayor a menor según número de valoraciones
+  const ordenados = [...places].sort((a, b) => {
+    const countA = a.userRatingCount || 0;
+    const countB = b.userRatingCount || 0;
+    return countB - countA;
+  });
+
+  console.log("Lugares ordenados por valoraciones:", ordenados);
+
+  // Muestra los lugares ordenados
+  for (const place of ordenados) {
+    displayRestaurant(place);
+  }
+});
+
+document.getElementById("btnRating")?.addEventListener("click", () => {
+  if (!places || places.length === 0) {
+    console.warn("No hay lugares cargados aún.");
+    return;
+  }
+
+  // Limpia la lista actual
+  if (restaurantListElement) restaurantListElement.innerHTML = "";
+
+  // Ordena de mayor a menor por rating
+  const ordenadosPorRating = [...places].sort((a, b) => {
+    const ratingA = a.rating || 0;
+    const ratingB = b.rating || 0;
+    return ratingB - ratingA;
+  });
+
+  console.log("Lugares ordenados por calificación:", ordenadosPorRating);
+
+  // Muestra los lugares ordenados
+  for (const place of ordenadosPorRating) {
+    displayRestaurant(place);
+  }
+});
+
 });
